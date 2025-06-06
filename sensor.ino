@@ -3,7 +3,7 @@
 #include <DHTesp.h>
 #include <LiquidCrystal_I2C.h>
 
-LiquidCrystal_I2C lcd (0x27, 16, 2);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 #define DHT_pino 19
 #define Verde 4
@@ -12,15 +12,19 @@ LiquidCrystal_I2C lcd (0x27, 16, 2);
 DHTesp sensor;
 
 // WiFi/MQTT configs
-const char* ssid = "Wokwi-GUEST";
-const char* password = "";
+const char* ssid = "Wokwi-GUEST"; // SUBSTITUA PELO SEU SSID
+const char* password = ""; // SUBSTITUA PELA SUA SENHA DO WIFI
 const char* mqtt_server = "broker.mqtt-dashboard.com";
 
 WiFiClient WOKWI_CLIENT;
 PubSubClient client(WOKWI_CLIENT);
 unsigned long lastMsg = 0;
-#define MSG_BUFFER_SIZE	(50)
+#define MSG_BUFFER_SIZE (50)
 char msg[MSG_BUFFER_SIZE];
+
+float lastTemperature = 0.0;
+float lastHumidity = 0.0;
+const float THRESHOLD = 0.5; // Limite para considerar uma alteração significativa (ex: 0.5 unidades)
 
 void setup_wifi() {
   delay(10);
@@ -50,32 +54,38 @@ void callback(char* topic, byte* payload, unsigned int length) {
     mensagem += (char)payload[i];
   }
 
-  // Exemplo: se o tópico for temperatura ou umidade, exibe o valor recebido
-  if (String(topic) == "sensor/temperatura") {
-    Serial.print("Temperatura recebida: ");
-    Serial.print(mensagem);
-    Serial.println(" °C - Mensagem entregue com sucesso.");
-  } else if (String(topic) == "sensor/umidade") {
-    Serial.print("Umidade recebida: ");
-    Serial.print(mensagem);
-    Serial.println(" % - Mensagem entregue com sucesso.");
-  } else {
-    Serial.print("Mensagem recebida no tópico [");
-    Serial.print(topic);
-    Serial.print("]: ");
-    Serial.print(mensagem);
-    Serial.println(" - Mensagem entregue com sucesso.");
+  Serial.print("Mensagem recebida no tópico [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  Serial.println(mensagem);
+
+  float currentTemperature = sensor.getTemperature();
+  float currentHumidity = sensor.getHumidity();
+
+  // Ao receber uma mensagem, responde com a temperatura ou umidade atual
+  if (String(topic) == "smartirrigation/temperaturaAmbiente") {
+    snprintf(msg, MSG_BUFFER_SIZE, "Temperatura atual: %.2f C", currentTemperature);
+    client.publish("smartirrigation/respostaTemperatura", msg);
+    Serial.print("Respondendo a temperatura: ");
+    Serial.println(msg);
+  } else if (String(topic) == "smartirrigation/umidadeAmbiente") {
+    snprintf(msg, MSG_BUFFER_SIZE, "Umidade atual: %.2f %%", currentHumidity);
+    client.publish("smartirrigation/respostaUmidade", msg);
+    Serial.print("Respondendo a umidade: ");
+    Serial.println(msg);
   }
 }
 
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    // String clientId = "ESP8266Client-";
-    // clientId += String(random(0xffff), HEX);
-    if (client.connect("WOKWI_CLIENT")) {
+    if (client.connect("WOKWI_CLIENT")) { // Pode usar um clientId mais dinâmico se preferir
       Serial.println("connected");
-      client.subscribe("inTopic");
+      // Se inscreve nos tópicos de temperatura e umidade
+      client.subscribe("smartirrigation/temperaturaAmbiente");
+      Serial.println("Subscribed to smartirrigation/temperaturaAmbiente");
+      client.subscribe("smartirrigation/umidadeAmbiente");
+      Serial.println("Subscribed to smartirrigation/umidadeAmbiente");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -96,6 +106,10 @@ void setup() {
   setup_wifi();
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
+
+  // Inicializa as últimas leituras para evitar publicação na primeira leitura
+  lastTemperature = sensor.getTemperature();
+  lastHumidity = sensor.getHumidity();
 }
 
 void loop() {
@@ -104,39 +118,50 @@ void loop() {
   }
   client.loop();
 
-  float temperatura = sensor.getTemperature();
-  float umidade = sensor.getHumidity();
+  float currentTemperature = sensor.getTemperature();
+  float currentHumidity = sensor.getHumidity();
 
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("     ");
-  lcd.print(temperatura);
-  lcd.print(" c");
+  lcd.print("    ");
+  lcd.print(currentTemperature);
+  lcd.print(" C");
   lcd.setCursor(0, 1);
   lcd.print("    ");
-  lcd.print(umidade);
+  lcd.print(currentHumidity);
   lcd.print(" %UR");
   ok();
   delay(2000);
 
-  // Publica temperatura e umidade no MQTT
-  snprintf(msg, MSG_BUFFER_SIZE, "%.2f", temperatura);
-  client.publish("sensor/temperatura", msg);
-  snprintf(msg, MSG_BUFFER_SIZE, "%.2f", umidade);
-  client.publish("sensor/umidade", msg);
+  // Verifica se a temperatura ou umidade mudou significativamente
+  if (abs(currentTemperature - lastTemperature) >= THRESHOLD) {
+    snprintf(msg, MSG_BUFFER_SIZE, "%.2f", currentTemperature);
+    client.publish("smartirrigation/temperaturaAmbiente", msg);
+    Serial.print("Publicando nova temperatura: ");
+    Serial.println(msg);
+    lastTemperature = currentTemperature;
+  }
 
-  if(temperatura >= 37){
+  if (abs(currentHumidity - lastHumidity) >= THRESHOLD) {
+    snprintf(msg, MSG_BUFFER_SIZE, "%.2f", currentHumidity);
+    client.publish("smartirrigation/umidadeAmbiente", msg);
+    Serial.print("Publicando nova umidade: ");
+    Serial.println(msg);
+    lastHumidity = currentHumidity;
+  }
+
+  if (currentTemperature >= 37) {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("     ALERTA");
     lcd.setCursor(0, 1);
-    lcd.print("TEMPERAT ELEVEDA");
+    lcd.print("TEMPERAT ELEVADA");
     Alerta();
     delay(1000);
-    client.publish("sensor/alerta", "Temperatura elevada");
+    client.publish("smartirrigation/alerta", "Temperatura elevada");
   }
 
-  if(umidade <= 30){
+  if (currentHumidity <= 30) {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("     ALERTA");
@@ -144,15 +169,16 @@ void loop() {
     lcd.print("UMIDADE BAIXA");
     Alerta();
     delay(1000);
-    client.publish("sensor/alerta", "Umidade baixa");
+    client.publish("smartirrigation/alerta", "Umidade baixa");
   }
 }
 
-void ok(){
+void ok() {
   digitalWrite(Verde, HIGH);
   digitalWrite(Vermelho, LOW);
 }
 
-void Alerta(){
+void Alerta() {
   digitalWrite(Vermelho, HIGH);
+  digitalWrite(Verde, LOW); // Garante que o LED verde esteja desligado durante o alerta
 }
